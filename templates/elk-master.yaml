@@ -1,0 +1,141 @@
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "fullname" . }}-master
+  labels:
+    {{- include "labels" . | nindent 4 }}
+    role: master
+spec:
+  clusterIP: None
+  ports:
+    - port: 9200
+      name: rest
+    - port: 9300
+      name: inter-node
+  selector:
+    {{- include "selectorLabels" . | nindent 4 }}
+    role: master
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    {{- include "labels" . | nindent 4 }}
+    role: master
+  name: {{ include "fullname" . }}-master
+spec:
+  replicas: 2
+  serviceName: {{ include "fullname" . }}-master
+  selector:
+    matchLabels:
+      {{- include "selectorLabels" . | nindent 6 }}
+      role: master
+  template:
+    metadata:
+      labels:
+        {{- include "labels" . | nindent 8 }}
+        role: master
+      #annotations:
+      #  rollme: {{ randAlphaNum 5 | quote }}
+    spec:
+      imagePullSecrets:
+        - name: oktapullsecret
+      containers:
+      - name: {{ .Release.Name }}-master
+        image: "docker.elastic.co/elasticsearch/elasticsearch:7.7.0"
+        #resources:
+        #  requests:
+        #    cpu: 200m
+        #    memory: 500Mi
+        ports:
+        - containerPort: 9200
+          name: rest
+          protocol: TCP
+        - containerPort: 9300
+          name: inter-node
+          protocol: TCP
+        lifecycle:
+          postStart:
+            exec:
+               command: ["sh", "-c", "mkdir -p /usr/share/elasticsearch/config/ && echo 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 | base64 -d > /usr/share/elasticsearch/config/main.p12"]
+        volumeMounts:
+        - name: "pvc-elk"
+          mountPath: /usr/share/elasticsearch/data
+        env:
+#          - name: cluster.name
+#            value: {{ .Release.Namespace }}-elk
+          - name: node.name
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: node.master
+            value: "true"
+          - name: node.data
+            value: "false"
+          - name: node.ingest
+            value: "false"
+          - name: discovery.seed_hosts
+            value: "{{ include "fullname" . }}-master"
+          - name: cluster.initial_master_nodes
+            value: "{{ include "fullname" . }}-master-0,{{ include "fullname" . }}-master-1,{{ include "fullname" . }}-master-2"
+          - name: network.host
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: xpack.license.self_generated.type
+            value: "basic"
+          - name: xpack.security.enabled
+            value: "true"
+          - name: xpack.monitoring.collection.enabled
+            value: "true"
+          - name: xpack.security.transport.ssl.enabled
+            value: "true"
+          - name: xpack.security.transport.ssl.verification_mode
+            value: "certificate"
+          - name: xpack.security.http.ssl.enabled
+            value: "false"
+          - name: xpack.security.audit.enabled
+            value: "true"
+          - name: reindex.remote.whitelist
+            value: "10.128.0.12:9200"
+          - name: xpack.security.transport.ssl.keystore.path
+            value: "/usr/share/elasticsearch/config/main.p12"
+          - name: network.publish_host
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.name
+          - name: ES_JAVA_OPTS
+            value: "-Xms2g -Xmx2g -Des.transport.cname_in_publish_address=true"
+          - name: ELASTIC_PASSWORD
+            value: "ChangeMeNow123"
+      initContainers:
+      - name: fix-permissions
+        image: busybox
+        command: ["sh", "-c", "chown -R 1000:1000 /usr/share/elasticsearch/data"]
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: "pvc-elk"
+          mountPath: /usr/share/elasticsearch/data
+      - name: increase-vm-max-map
+        image: busybox
+        command: ["sysctl", "-w", "vm.max_map_count=262144"]
+        securityContext:
+          privileged: true
+      - name: increase-fd-ulimit
+        image: busybox
+        command: ["sh", "-c", "ulimit -n 65536"]
+        securityContext:
+          privileged: true
+  volumeClaimTemplates:
+  - metadata:
+      name: "pvc-elk"
+      labels:
+        {{- include "labels" . | nindent 8 }}
+        role: master
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: {{ .Values.master.storage }}

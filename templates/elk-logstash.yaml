@@ -1,0 +1,249 @@
+{{- $prefix := include "fullname" . -}}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fullname" . }}-logstash-pipeline
+  labels:
+    {{- include "labels" . | nindent 4 }}
+    role: logstash
+data:
+{{- range $key, $value := .Values.logstash.inputs }}
+  input_{{ $key }}.conf: |-
+{{ $value | replace "$prefix" $prefix | indent 4 }}
+{{- end }}
+
+{{- range $key, $value := .Values.logstash.filters }}
+  filter_{{ $key }}.conf: |-
+{{ $value | replace "$prefix" $prefix | indent 4 }}
+{{- end }}
+
+{{- range $key, $value := .Values.logstash.outputs }}
+  output_{{ $key }}.conf: |-
+{{ $value | replace "$prefix" $prefix | indent 4 }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fullname" . }}-logstash-patterns
+  labels:
+    {{- include "labels" . | nindent 4 }}
+    role: logstash
+data:
+{{- range $key, $value := .Values.logstash.patterns }}
+  {{ $key }}: |-
+{{ $value | replace "$prefix" $prefix | indent 4 }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fullname" . }}-logstash-files
+  labels:
+    {{- include "labels" . | nindent 4 }}
+    role: logstash
+data:
+{{- range $key, $value := .Values.logstash.files }}
+  {{ $key }}: |-
+{{ $value | replace "$prefix" $prefix | indent 4 }}
+{{- end }}
+binaryData:
+ {{- range $key, $value := .Values.logstash.binaryFiles }}
+   {{ $key }}: |-
+{{ $value | indent 4   }}
+ {{- end }}
+{{- if .Values.logstash.exporter.serviceMonitor.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "fullname" . }}-logstash
+  {{- if .Values.logstash.exporter.serviceMonitor.namespace }}
+  namespace: {{ .Values.logstash.exporter.serviceMonitor.namespace | replace "$prefix" $prefix }}
+  {{- end }}
+  labels:
+    {{- include "labels" . | nindent 4 }}
+    role: logstash
+spec:
+  endpoints:
+  - interval: {{ .Values.logstash.exporter.serviceMonitor.interval }}
+    {{- if .Values.logstash.exporter.serviceMonitor.scrapeTimeout }}
+    scrapeTimeout: {{ .Values.logstash.exporter.serviceMonitor.scrapeTimeout }}
+    {{- end }}
+    honorLabels: true
+    targetPort: {{ .Values.logstash.exporter.logstash.port }}
+    path: {{ .Values.logstash.exporter.logstash.path }}
+    scheme: {{ .Values.logstash.exporter.serviceMonitor.scheme }}
+  jobLabel: "{{ include "fullname" . }}"
+  selector:
+    matchLabels:
+      {{- include "selectorLabels" . | nindent 6 }}
+      role: logstash
+  namespaceSelector:
+    matchNames:
+      - {{ .Values.logstash.exporter.serviceMonitor.namespace }}
+{{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "fullname" . }}-logstash
+  labels:
+    {{- include "labels" . | nindent 4 }}
+    role: logstash
+---   
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "fullname" . }}-logstash
+  labels:
+    {{- include "labels" . | nindent 4 }}
+    role: logstash
+spec:
+    {{- if not .Values.logstash.clusterIP }}
+  clusterIP: None
+    {{- end }} 
+  ports:
+    - port: 5044
+      name: beats
+  selector:
+    {{- include "selectorLabels" . | nindent 4 }}
+    role: logstash 
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    {{- include "labels" . | nindent 4 }}
+    role: logstash
+  name: {{ include "fullname" . }}-logstash
+spec:
+  serviceName: {{ include "fullname" . }}-logstash
+  replicas: 3
+  revisionHistoryLimit: 0
+  selector:
+    matchLabels:
+      {{- include "selectorLabels" . | nindent 6 }}
+      role: logstash
+  template:
+    metadata:
+      labels:
+        {{- include "labels" . | nindent 8 }}
+        role: logstash
+    spec:
+      securityContext:
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: {{ include "fullname" . }}-logstash
+          image: "docker.elastic.co/logstash/logstash:7.7.0"
+          ports:
+            - name: monitor
+              containerPort: 9600
+              protocol: TCP
+            - name: beats
+              containerPort: 5044
+              protocol: TCP
+          lifecycle:
+            postStart:
+              exec:
+                command: ["sh", "-c", "curl -u elastic:ChangeMeNow123 -X POST '{{ include "fullname" . }}-master:9200/_security/user/logstash_system/_password?pretty' -H 'Content-Type: application/json' -d'{\"password\" : \"ChangeMeNow123\"}'"]
+          env:
+            ## Logstash monitoring API host and port env vars
+            - name: xpack.monitoring.enabled
+              value: "true"
+            - name: HTTP_HOST
+              value: "{{ include "fullname" . }}-logstash"
+            - name: HTTP_PORT
+              value: "9600"
+            ## Elasticsearch output
+            - name: ELASTICSEARCH_HOST
+              value: "{{ include "fullname" . }}-master"
+            - name: ELASTICSEARCH_PORT
+              value: "9200"
+            - name: xpack.monitoring.elasticsearch.username
+              value: "logstash_system"
+            - name: xpack.monitoring.elasticsearch.password
+              value: "ChangeMeNow123"
+            - name: xpack.monitoring.elasticsearch.hosts
+              value: "{{ include "fullname" . }}-master"
+            # Logstash Java Options
+            - name: LS_JAVA_OPTS
+              value: "-Xmx1g -Xms1g"
+            ## Additional env vars
+          resources:
+            requests:
+              cpu: 200m
+              memory: 500Mi
+          volumeMounts:
+          {{- if .Values.logstash.persistence.enabled }}
+            - name: "pvc-elk-logstash"
+              mountPath: /usr/share/logstash/data
+          {{- else }}
+            - name: data
+              mountPath: /usr/share/logstash/data
+          {{- end }}
+            - name: patterns
+              mountPath: /usr/share/logstash/patterns
+            - name: files
+              mountPath: /usr/share/logstash/files
+            - name: pipeline
+              mountPath: /usr/share/logstash/pipeline
+{{- if .Values.logstash.exporter.logstash.enabled }}
+        ## logstash-exporter
+        - name: {{ include "fullname" . }}-logstash-exporter
+          image: "{{ .Values.logstash.exporter.logstash.image.repository }}:{{ .Values.logstash.exporter.logstash.image.tag }}"
+          imagePullPolicy: {{ .Values.logstash.exporter.logstash.image.pullPolicy }}
+          command: ["/bin/sh", "-c"]
+          ## Delay start of logstash-exporter to give logstash more time to come online.
+          args:
+            - >-
+              sleep 25;
+              exec /logstash_exporter --logstash.endpoint http://{{ .Values.logstash.exporter.logstash.endpoint | replace "$prefix" $prefix }}:{{ .Values.logstash.exporter.logstash.target.port }} --web.listen-address :{{ .Values.logstash.exporter.logstash.port }}
+          ports:
+            - name: ls-exporter
+              containerPort: {{ .Values.logstash.exporter.logstash.port }}
+              protocol: TCP
+          livenessProbe:
+{{ toYaml .Values.logstash.exporter.logstash.livenessProbe | indent 12 }}
+          readinessProbe:
+{{ toYaml .Values.logstash.exporter.logstash.readinessProbe | indent 12 }}
+          {{- with .Values.logstash.exporter.logstash.config }}
+          env:
+            {{- range $key, $value := . }}
+            - name: {{ $key | upper | replace "." "_" }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- end }}
+          resources:
+{{ toYaml .Values.logstash.exporter.logstash.resources | indent 12 }}
+{{- end }}
+      serviceAccountName: {{ include "fullname" . }}-logstash
+      volumes:
+        - name: patterns
+          configMap:
+            name: {{ include "fullname" . }}-logstash-patterns
+        - name: files
+          configMap:
+            name: {{ include "fullname" . }}-logstash-files
+        - name: pipeline
+          configMap:
+            name: {{ include "fullname" . }}-logstash-pipeline
+{{- if not .Values.logstash.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+{{- else }}
+  volumeClaimTemplates:
+  - metadata:
+      name: "pvc-elk-logstash"
+      labels:
+        {{- include "labels" . | nindent 8 }}
+        role: logstash
+    spec:
+      accessModes:
+        - [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 2Gi
+{{- end }}

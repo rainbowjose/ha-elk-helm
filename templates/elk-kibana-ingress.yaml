@@ -1,0 +1,35 @@
+apiVersion: networking.k8s.io/v1beta1
+kind: Ingress
+metadata:
+  name: {{ include "fullname" . }}-ingress
+  labels:
+    {{- include "labels" . | nindent 4 }}
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    kubernetes.io/ingress.class: nginx
+    nginx.ingress.kubernetes.io/affinity: cookie
+    nginx.ingress.kubernetes.io/session-cookie-expires: "172800"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "172800"
+    nginx.ingress.kubernetes.io/session-cookie-name: route
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      #client_max_body_size 100M;
+      default_type  application/octet-stream;
+      sendfile        on;
+      #tcp_nopush     on;
+      keepalive_timeout  1d;
+      fastcgi_read_timeout 1d;
+      #proxy_read_timeout 1d;
+      #gzip  on;
+spec:
+  tls:
+  - hosts:
+    - {{ .Values.kibana.ingress.host }}
+    secretName: {{ .Values.kibana.ingress.host }}-tls
+  rules:
+  - host: {{ .Values.kibana.ingress.host }}
+    http:
+      paths:
+      - backend:
+          serviceName: {{ include "fullname" . }}-kibana
+          servicePort: 5601
+        path: /

@@ -1,0 +1,393 @@
+#image:
+#  repository: "docker.elastic.co/elasticsearch/elasticsearch:7.5.1"
+
+#requests:
+#  cpu: 200m
+#  memory: 500Mi
+#replicaCount: 4
+#storage:
+#  pvcname: "pvc-elk"
+#  size: "10Gi"
+#javaopts: "-Xms2g -Xmx2g -Des.transport.cname_in_publish_address=true"
+
+master:
+  storage: 10Gi
+
+data:
+  storage: 2500Gi
+
+ingest:
+  storage: 15Gi
+
+kibana:
+  ingress:
+    host: log.yourhost.ru
+
+  plugins:
+    enabled: true
+    reset: false
+    values:
+      - logtrail,0.1.31,https://github.com/sivasamyk/logtrail/releases/download/v0.1.31/logtrail-7.7.0-0.1.31.zip
+    logtrailconfig: |
+      {
+        "index_patterns" : [
+          {
+            "es": {
+              "default_index": "logstash-*",
+              "allow_url_parameter": false
+            },
+            "tail_interval_in_seconds": 10,
+            "es_index_time_offset_in_seconds": 0,
+            "display_timezone": "Europe/Moscow",
+            "display_timestamp_format": "YYYY MMM DD HH:mm:ss",
+            "max_buckets": 500,
+            "default_time_range_in_days" : 0,
+            "max_hosts": 100,
+            "max_events_to_keep_in_viewer": 5000,
+            "fields" : {
+              "mapping" : {
+                  "timestamp" : "@timestamp",
+                  "display_timestamp" : "@timestamp",
+                  "hostname" : "kubernetes.container.name",
+                  "program": "kubernetes.pod.name",
+                  "message": "message"
+              },
+              "message_format": "{{{message}}}",
+              "keyword_suffix" : "keyword"
+            },
+            "color_mapping" : {
+              "field": "fields.levelmark",
+              "mapping": {
+                "error": "#FF0000",
+                "warn": "#FFEF96",
+                "debug": "#B5E7A0",
+                "trace": "#CFE0E8"
+              }
+            }
+          }
+        ]
+      }
+
+filebeat:
+  filebeatconfig: |
+    #- type: container
+    #  paths:
+    #    - /var/log/containers/*.log
+    #  processors:
+    #    - add_kubernetes_metadata:
+    #        host: ${NODE_NAME}
+    #        matchers:
+    #        - logs_path:
+    #            logs_path: "/var/log/containers/"
+    setup.dashboards.enabled: true
+    setup.template.enabled: true
+    setup.kibana.host: "$prefix-kibana:5601"
+    setup.kibana.username: "elastic"
+    setup.kibana.password: "ChangeMeNow123"
+    setup.kibana.protocol: "http"
+
+    setup.template.settings:
+      index.number_of_shards: 0
+    setup.template.overwrite: true
+    filebeat.overwrite_pipelines: true
+
+    inputs:
+      # Mounted `filebeat-inputs` configmap:
+      path: ${path.config}/inputs.d/*.yml
+      # Reload inputs configs as they change:
+      reload.enabled: false
+
+    modules:
+      path: ${path.config}/modules.d/*.yml
+      # Reload module configs as they change:
+      reload.enabled: false
+
+    #filebeat.modules:
+    #- module: nginx
+    #  access:
+    #    enabled: true
+    #    var.paths: ["/var/log/containers/*.log"]
+    #  error:
+    #    enabled: true
+    #    var.paths: ["/var/log/containers/*.log"]
+
+    filebeat.autodiscover:
+      providers:
+        - type: kubernetes
+          node: ${NODE_NAME}
+          hints.enabled: true
+          hints.default_config:
+            type: container
+            paths:
+              - /var/log/containers/*-${data.kubernetes.container.id}.log
+            exclude_lines: ["^\\s+[\\-`('.|_]"]
+            multiline.pattern: '^[[:space:]]+(at|\.{3})[[:space:]]+\b|^Caused by:'
+            multiline.negate: false
+            multiline.match: after
+    processors:
+    #- add_cloud_metadata: ~
+    #- add_kubernetes_metadata: ~
+    #- add_docker_metadata: ~
+    - add_locale:
+        format: offset
+    - add_kubernetes_metadata:
+        default_indexers.enabled: false
+        default_matchers.enabled: false
+        kube_config: ${HOME}/.kube/config
+    #- add_host_metadata:
+    #    netinfo.enabled: true
+    - add_fields:
+        fields:
+          levelmark: info
+        when:
+            regexp:
+               message: "(?i)INFO"
+    - add_fields:
+        fields:
+          levelmark: error
+        when:
+            regexp:
+               message: "(?i)error"
+    - add_fields:
+        fields:
+          levelmark: warn
+        when:
+            regexp:
+               message: "(?i)WARN"
+    - add_fields:
+        fields:
+          levelmark: debug
+        when:
+            regexp:
+               message: "(?i)DEBUG"
+    - add_fields:
+        fields:
+          levelmark: trace
+        when:
+            regexp:
+               message: "(?i)trace"
+
+    #output.elasticsearch:
+    #  hosts: ['$prefix-elk:9200']
+    #  username: "elastic"
+    #  password: "ChangeMeNow123"
+    output.logstash:
+      hosts: ['$prefix-logstash:5044']
+    #output.console:
+    #  enabled: true
+  filebeatinputs: |
+
+logstash:
+  clusterIP: false
+  config:
+    config.reload.automatic: "true"
+    path.config: /usr/share/logstash/pipeline
+    path.data: /usr/share/logstash/data
+
+    ## ref: https://www.elastic.co/guide/en/logstash/current/persistent-queues.html
+    queue.checkpoint.writes: 1
+    queue.drain: "true"
+    queue.max_bytes: 1gb  # disk capacity must be greater than the value of `queue.max_bytes`
+    queue.type: persisted
+
+  ## Patterns for filters.
+  ## Each YAML heredoc will become a separate pattern file.
+  patterns:
+    # main: |-
+    #   TESTING {"foo":.*}$
+
+  ## Custom files that can be referenced by plugins.
+  ## Each YAML heredoc will become located in the logstash home directory under
+  ## the files subdirectory.
+  files:
+    logstash-template.json: |-
+      {
+        "order": 0,
+        "version": 1,
+        "index_patterns": [
+          "logstash-*"
+        ],
+        "settings": {
+          "index": {
+            "refresh_interval": "5s"
+          }
+        },
+        "mappings": {
+          "doc": {
+            "_meta": {
+              "version": "1.0.0"
+            },
+            "enabled": true
+          }
+        },
+        "aliases": {}
+      }
+
+  ## Custom binary files encoded as base64 string that can be referenced by plugins
+  ## Each base64 encoded string is decoded & mounted as a file under logstash home directory under
+  ## the files subdirectory.
+  binaryFiles: {}
+
+  ## NOTE: To achieve multiple pipelines with this chart, current best practice
+  ## is to maintain one pipeline per chart release. In this way configuration is
+  ## simplified and pipelines are more isolated from one another.
+
+  inputs:
+    main: |-
+      input {
+        # udp {
+        #   port => 1514
+        #   type => syslog
+        # }
+        # tcp {
+        #   port => 1514
+        #   type => syslog
+        # }
+        beats {
+          host => "$prefix-logstash"
+          port => 5044
+        }
+        # http {
+        #   port => 8080
+        # }
+        # kafka {
+        #   ## ref: https://www.elastic.co/guide/en/logstash/current/plugins-inputs-kafka.html
+        #   bootstrap_servers => "kafka-input:9092"
+        #   codec => json { charset => "UTF-8" }
+        #   consumer_threads => 1
+        #   topics => ["source"]
+        #   type => "example"
+        # }
+      }
+  filters:
+    main: |-
+      #filter {
+      #  if [message] =~ "\tat" {
+      #    grok {
+      #      match => ["message", "^(\tat)"]
+      #      add_tag => ["stacktrace"]
+      #    }
+      #  }
+      #
+      #  grok {
+      #    match => [ "message",
+      #               "(?<timestamp>%{YEAR}-%{MONTHNUM}-%{MONTHDAY} %{TIME})  %{LOGLEVEL:level} %{NUMBER:pid} --- .+? :\s+(?<logmessage>.*)"
+      #             ]
+      #  }
+      #
+      #  date {
+      #    match => [ "timestamp" , "yyyy-MM-dd HH:mm:ss.SSS" ]
+      #  }
+      #
+      #}
+      filter {
+        #NGINX------------------------------------------------
+        if [kubernetes][container][name] == "nginx-ingress-controller" {
+          if "[error]" in [message] {
+            grok {
+              match => { "message" => ["%{DATA:[nginx][error][time]} \[%{DATA:[nginx][error][level]}\] %{NUMBER:[nginx][error][pid]}#%{NUMBER:[nginx][error][tid]}: (\*%{NUMBER:[nginx][error][connection_id]} )?%{GREEDYDATA:[nginx][error][message]}"] }
+              #remove_field => "message"
+            }
+            mutate {
+              rename => { "@timestamp" => "read_timestamp" }
+            }
+            date {
+              match => [ "[nginx][error][time]", "YYYY/MM/dd H:m:s" ]
+              remove_field => "[nginx][error][time]"
+            }
+          }
+          else
+          {
+            grok {
+              match => { "message" => ["%{IPORHOST:[nginx][access][remote_ip]} - %{DATA:[nginx][access][user_name]} \[%{HTTPDATE:[nginx][access][time]}\] \"%{WORD:[nginx][access][method]} %{DATA:[nginx][access][url]} HTTP/%{NUMBER:[nginx][access][http_version]}\" %{NUMBER:[nginx][access][response_code]} %{NUMBER:[nginx][access][body_sent][bytes]} \"%{DATA:[nginx][access][referrer]}\" \"%{DATA:[nginx][access][agent]}\""] }
+              #remove_field => "message"
+            }
+            mutate {
+              add_field => { "read_timestamp" => "%{@timestamp}" }
+            }
+            date {
+              match => [ "[nginx][access][time]", "dd/MMM/YYYY:H:m:s Z" ]
+              remove_field => "[nginx][access][time]"
+            }
+            useragent {
+              source => "[nginx][access][agent]"
+              target => "[nginx][access][user_agent]"
+              remove_field => "[nginx][access][agent]"
+            }
+            geoip {
+              source => "[nginx][access][remote_ip]"
+              target => "[geoip]"
+            }
+          }
+        }
+      }
+  outputs:
+    main: |-
+      output {
+        #stdout {
+        #        codec => rubydebug
+        #}
+
+        elasticsearch {
+          hosts => ["${ELASTICSEARCH_HOST}:${ELASTICSEARCH_PORT}"]
+          manage_template => true
+          index => "logstash-%{+YYYY.MM.dd}"
+          user => "elastic"
+          password => "ChangeMeNow123"
+        }
+        # kafka {
+        #   ## ref: https://www.elastic.co/guide/en/logstash/current/plugins-outputs-kafka.html
+        #   bootstrap_servers => "kafka-output:9092"
+        #   codec => json { charset => "UTF-8" }
+        #   compression_type => "lz4"
+        #   topic_id => "destination"
+        # }
+      }
+  exporter:
+    logstash:
+      enabled: false
+      image:
+        repository: bonniernews/logstash_exporter
+        tag: v0.1.2
+        pullPolicy: IfNotPresent
+      env: {}
+      resources: {}
+      endpoint: "localhost"
+      path: /metrics
+      port: 9198
+      target:
+        port: 9600
+        path: /metrics
+      livenessProbe:
+        httpGet:
+          path: /metrics
+          port: ls-exporter
+        periodSeconds: 15
+        timeoutSeconds: 60
+        failureThreshold: 8
+        successThreshold: 1
+      readinessProbe:
+        httpGet:
+          path: /metrics
+          port: ls-exporter
+        periodSeconds: 15
+        timeoutSeconds: 60
+        failureThreshold: 8
+        successThreshold: 1
+    serviceMonitor:
+      ## If true, a ServiceMonitor CRD is created for a prometheus operator
+      ## https://github.com/coreos/prometheus-operator
+      ##
+      enabled: false
+      #  namespace: $prefix
+      labels: {}
+      interval: 10s
+      scrapeTimeout: 10s
+      scheme: http
+      port: metrics
+  persistence:
+    pvcname: "pvc-elk-logstash"
+    enabled: false
+    accessMode: ReadWriteOnce
+    size: 2Gi
+    #It's still elk-logstash config!

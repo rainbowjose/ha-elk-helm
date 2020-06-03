@@ -1,0 +1,129 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "fullname" . }}-kibana
+  labels:
+    {{- include "labels" . | nindent 4 }}
+    role: kibana
+spec:
+  ports:
+    - port: 5601
+      name: kibana-front
+  selector:
+    {{- include "selectorLabels" . | nindent 4 }}
+    role: kibana
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fullname" . }}-logtrail
+  labels:
+    {{- include "labels" . | nindent 4 }}
+    role: kibana
+data: 
+  logtrail.json: |-
+{{ .Values.kibana.plugins.logtrailconfig | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    {{- include "labels" . | nindent 4 }}
+    role: kibana
+  name: {{ include "fullname" . }}-kibana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "selectorLabels" . | nindent 6 }}
+      role: kibana
+  template:
+    metadata:
+      labels:
+        {{- include "labels" . | nindent 8 }}
+        role: kibana
+      annotations:
+        rollme: {{ randAlphaNum 5 | quote }}
+    spec:
+      imagePullSecrets:
+        - name: oktapullsecret
+      containers:
+      - name: {{ include "fullname" . }}-kibana
+        image: "docker.elastic.co/kibana/kibana:7.7.0"
+        #resources:
+        #  requests:
+        #    cpu: 4000m
+        #    memory: 2048Mi
+        ports:
+        - containerPort: 5601
+          name: kibana-front
+          protocol: TCP
+        volumeMounts:
+{{- if .Values.kibana.plugins.enabled }}
+        - name: plugins
+          mountPath: /usr/share/kibana/plugins
+        - name: {{ include "fullname" . }}-logtrail
+          mountPath: /usr/share/kibana/plugins/logtrail/logtrail.json
+          subPath: logtrail.json
+{{- end }}
+        env:
+          - name: KIBANA_INDEX
+            value: ".kibana_1"
+          - name: ELASTICSEARCH_HOSTS
+            value: "http://{{ include "fullname" . }}-master:9200"
+          - name: SERVER_NAME
+            value: {{ include "fullname" . }}-master
+          - name: ELASTICSEARCH_USERNAME
+            value: "elastic"
+          - name: ELASTICSEARCH_PASSWORD
+            value: "ChangeMeNow123"
+      volumes:
+{{- if .Values.kibana.plugins.enabled }}
+        - name: plugins
+          emptyDir: {}
+        - name: {{ include "fullname" . }}-logtrail
+          configMap:
+            name: {{ include "fullname" . }}-logtrail
+{{- end }}
+      initContainers:
+{{- if .Values.kibana.plugins.enabled }}
+      - name: {{ include "fullname" . }}-plugins-install
+        image: "docker.elastic.co/kibana/kibana:7.7.0"
+        command:
+          - /bin/bash
+          - "-c"
+          - |
+            set -e
+            rm -rf plugins/lost+found
+            plugins=(
+            {{- range .Values.kibana.plugins.values }}
+            {{ . }}
+            {{- end }}
+            )
+            if {{ .Values.kibana.plugins.reset }}
+            then
+              for p in $(./bin/kibana-plugin list | cut -d "@" -f1)
+              do
+                ./bin/kibana-plugin remove ${p}
+              done
+            fi
+            for i in "${plugins[@]}"
+            do
+              IFS=',' read -ra PLUGIN <<< "$i"
+              pluginInstalledCheck=$(./bin/kibana-plugin list | grep "${PLUGIN[0]}" | cut -d '@' -f1 || true)
+              pluginVersionCheck=$(./bin/kibana-plugin list | grep "${PLUGIN[0]}" | cut -d '@' -f2 || true)
+              if [ "${pluginInstalledCheck}" = "${PLUGIN[0]}" ]
+              then
+                if [ "${pluginVersionCheck}" != "${PLUGIN[1]}" ]
+                then
+                  ./bin/kibana-plugin remove "${PLUGIN[0]}"
+                  ./bin/kibana-plugin install "${PLUGIN[2]}"
+                fi
+              else
+                ./bin/kibana-plugin install "${PLUGIN[2]}"
+              fi
+            done
+        volumeMounts:
+        - name: plugins
+          mountPath: /usr/share/kibana/plugins
+{{- end }}
